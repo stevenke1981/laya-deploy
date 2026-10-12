@@ -1,7 +1,7 @@
 # laya-deploy
 
 **在本機 GPU 部署 [convaiinnovations/laya](https://huggingface.co/convaiinnovations/laya)，
-並以專為 laya 設計的「決策模式」發問。**
+以專為 laya 設計的「決策模式」發問，並提供讓 agent 操作 Windows 的 MCP computer use。**
 
 Laya 是非自回歸的「System 1」決策模型：給它一段狀態（文字或 JSON）和一組型別化問題
 （`choice` / `noul` / `score`），一次前向傳遞就回傳每個選項的機率，不生成文字。
@@ -31,6 +31,7 @@ Laya 是非自回歸的「System 1」決策模型：給它一段狀態（文字�
 | VRAM | english 1.57 GiB、multilingual 1.22 GiB |
 | 決策模式 vs 長提示問法（english） | 元件比對 **29/33 vs 15/33**、風險分類 **21/24 vs 17/24**；Pac-Man 2/5 勝 vs 0/5 |
 | 不可逆動作的唯一把關 | **不建議**，見「限制」 |
+| Computer use（MCP） | 真實桌面繁中記事本：找元件、輸入中英文、開選單成功；`alt+f4`、`delete` 會先要求確認 |
 
 ## 安裝（Windows）
 
@@ -81,6 +82,104 @@ curl.exe -s http://127.0.0.1:8100/api/alpha/decisions -H "Content-Type: applicat
 其他值或未提供時，一律用 `LAYA_DEPLOY_DEFAULT_MODEL`。
 
 錯誤以 `{"error": {"message", "code"}}` 回傳：格式不符 400、未授權 401、過大 413、推論失敗 500。
+
+## Computer use：讓 agent 用 laya 操作 Windows
+
+laya 不會規劃、也看不到圖片，所以分工如下：**MCP 客戶端的模型**（Claude Code、OpenCode…）決定下一步做什麼；
+**laya-deploy** 讀 Windows UI Automation 元件樹、用 laya 決策模式找出目標元件並判斷風險，再以 SendInput 送出滑鼠與鍵盤。
+
+```
+Claude Code / OpenCode（規劃：下一步做什麼）
+        │ click("File menu")      MCP（stdio）
+        ▼
+laya-deploy mcp
+  UIA 元件樹 → 一行一個元件（e1, e2…）
+  找元件：id / "x,y" 直接用；描述 → 字面篩選 + 中英對照 → laya 比對 → 勝者單獨重評分
+  風險：laya（destructive vs harmless）＋ 關鍵字下限 ＋ 快捷鍵規則 → 高風險先問人
+  SendInput（含中日韓文字）→ 前後畫面比對 → done / unverified
+        │
+        ▼
+     Windows 桌面
+```
+
+### 安裝與設定
+
+```powershell
+uv sync --extra model --extra cua          # cua = uiautomation + mcp + pillow
+uv run laya-deploy serve                   # laya 伺服器（另一個終端機，或開機自動啟動）
+uv run laya-deploy cua-observe             # 看目前前景視窗的元件清單
+uv run laya-deploy cua-ground "File menu"  # 只判斷不動作：選中誰、機率、風險
+```
+
+Claude Code：
+
+```powershell
+claude mcp add laya-computer-use -- C:\path\to\laya-deploy\.venv\Scripts\laya-deploy.exe mcp
+```
+
+OpenCode 與其他客戶端見 `integrations/`。設定以環境變數調整（`LAYA_CUA_*`）：
+
+| 變數 | 預設 | 說明 |
+|---|---|---|
+| `LAYA_CUA_URL` | `http://127.0.0.1:8100/api/alpha/decisions` | laya 伺服器 |
+| `LAYA_CUA_MODEL` | `english` | 找元件與風險判斷用的 checkpoint |
+| `LAYA_CUA_GROUND_MIN_P` | `0.5` | 低於此值就不動作，回報候選清單 |
+| `LAYA_CUA_RISK_THRESHOLD` | `0.5` | 風險達此值需人工確認 |
+| `LAYA_CUA_AUTO_CONFIRM_RISKY` | `false` | **危險**：跳過人工確認 |
+| `LAYA_CUA_BACKEND` | `auto` | `windows` 或 `fake`（記憶體中的假桌面，不碰真實滑鼠鍵盤） |
+
+### 工具與狀態
+
+工具：`observe, ground, list_windows, focus_window, launch, click, type_text, hotkey, scroll, wait, screenshot`。
+目標可用 observe 給的 id（`e12`）、螢幕座標（`"640,360"`），或描述（`"the Save button in the Save As dialog"`）。
+
+| 狀態 | 意思 | agent 該做的 |
+|---|---|---|
+| `done` | 已動作，畫面有對應變化 | 繼續 |
+| `unverified` | 已動作，但畫面沒變化 | 重新 observe 再判斷 |
+| `ambiguous` / `not_found` | 描述對不到夠可信的元件，附候選清單 | 改用候選的 id 重試 |
+| `needs_confirmation` | 高風險，**沒有送出輸入** | 問使用者；同意後以 `confirm=true`、回傳的 id 與 `if_revision` 重送 |
+| `stale` | 畫面已和做決定時不同（`if_revision`） | 重新 observe |
+| `error` | laya 伺服器沒開、或系統拒絕輸入 | 依訊息處理 |
+
+### 安全設計
+
+- 點擊、會送出的輸入（Enter、Tab、換行、清除內容）、快捷鍵、啟動程式，送出前都先判斷風險。
+- 風險 = max(laya P(destructive), 關鍵字下限 0.9)。關鍵字涵蓋刪除、送出、付款、解除安裝、重設、覆寫、登出等中英文用語，
+  因為 laya 在評測中仍漏掉 3/24 個高風險動作。
+- `alt+f4`、`shift+delete` 等固定視為高風險；`esc`、`ctrl+a`、`ctrl+c`、`ctrl+s`、方向鍵等例行快捷鍵不送 laya 判斷。
+- 啟動程式：只有常見的安全程式名稱（notepad、calc、瀏覽器…）、`ms-settings:` 與 http(s) 網址可免確認。
+- laya 伺服器沒開或回傳異常時，風險判斷一律視為「需要確認」（fail closed）；id 與座標目標仍可使用。
+- 畫面上的文字一律當資料，不當指令。
+
+### 找元件的做法與實測
+
+描述目標時，程式先依字面重疊（含中英對照，如 File ↔ 檔案）挑出最多 12 個候選，laya 以決策模式比對；
+候選多時分組淘汰。決選只比較少數幾個，勝者機率是相對值，所以勝者會再「單獨 vs 其他元件」重評分一次，
+且須有字面重疊或單獨分數 ≥ 0.85 才算 `ok`，否則回報候選讓 agent 用 id 重試。
+
+真實桌面端到端實測（2026-10-12，Windows 10 繁中介面、全新開啟的記事本，經 MCP stdio 呼叫）：
+
+| 呼叫 | 結果 |
+|---|---|
+| `launch("notepad")` | `done`，風險 0.17，免確認（允許清單內） |
+| `ground("the text editing area", action="type")` | `ok`，對到「文字編輯器」，p=0.61 |
+| `type_text("hello from laya 你好", target="the text editing area")` | `done`，中英文都正確輸入 |
+| `click("File menu")` | `done`，對到「檔案(F)」，p=0.83，風險 0.15，選單已打開 |
+| `hotkey("escape")`、`hotkey("ctrl+a")` | `done`，例行快捷鍵不需確認 |
+| `ground("the Print preview button")`（畫面上沒有） | `ambiguous`，附候選清單，不動作 |
+| `hotkey("alt+f4")` | `needs_confirmation`，沒有送出 |
+| `hotkey("delete")` → 帶 `confirm=true` 與 `if_revision` 重送 | 先要求確認（風險 0.96），確認後送出；回報 `unverified`（UIA 讀到的內容沒有變化） |
+
+修正前的同一輪實測發現三個問題，已在程式中處理並寫成測試：中文介面上「File menu」對到選單列本身（加入中英對照）、
+`esc` 與 `ctrl+a` 被要求確認（例行快捷鍵規則，且快捷鍵的風險描述不再帶入欄位內容）、
+點「檔案(F)」被評為 0.60 風險（給 laya 的風險描述改為「動作 + 角色 + 英文標籤」：取消 0.58→0.25、刪除仍為 0.97）。
+
+限制：
+- laya 只負責「選哪個元件」與「危不危險」，不會規劃；任務拆解全靠 MCP 客戶端的模型。
+- 只有 Windows（UI Automation）。畫布、遊戲等沒有元件的介面只能用 `"x,y"` 座標，無法驗證結果。
+- 系統管理員權限的視窗需要以系統管理員身分執行 `laya-deploy mcp`。
+- MCP server 結束時，它啟動的程式可能隨之關閉（實測記事本會被關閉；原因未查證）。
 
 ## laya 決策模式（本專案的做法）
 
@@ -161,7 +260,9 @@ Pac-Man 的事實本來就由程式算好，laya 在這裡的角色是把短語�
 
 ## Agent skill
 
-`skills/laya-decisions/SKILL.md` 教 agent 如何確認伺服器、用決策模式發問、選 checkpoint、設門檻。
+- `skills/laya-decisions/SKILL.md`：教 agent 如何確認伺服器、用決策模式發問、選 checkpoint、設門檻。
+- `skills/laya-computer-use/SKILL.md`：教 agent 用 MCP 工具操作 Windows（流程、狀態碼、安全規則）。
+
 複製到 `~/.claude/skills/`（Claude Code）或 `~/.config/opencode/skills/`（OpenCode）即可使用。
 
 ## 安全
@@ -182,9 +283,14 @@ src/laya_deploy/
   eval_cases.py grounding 與風險的標註案例
   eval_cli.py   eval 子命令：決策模式 vs 長提示問法
   cli.py        serve / ask / bench / pull / doctor
+  cua/          computer use：backends（Windows UIA / fake）、observe、keys、glossary（中英對照）、
+                grounding（找元件）、guard（風險與驗證）、controller、mcp_server、settings
+  cua_cli.py    mcp / cua-observe / cua-ground 子命令
   pacman_cli.py pacman 子命令（--style native|prompt）
   games/        Pac-Man 規則、決策模式與長提示策略、啟發式、Tk 視窗
 skills/laya-decisions/SKILL.md
+skills/laya-computer-use/SKILL.md
+integrations/   Claude Code 與 OpenCode 的 MCP 設定範例
 scripts/start-server.ps1
 tests/          以 FakeEngine 測試，不需下載模型或 GPU
 ```

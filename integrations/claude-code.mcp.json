@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "laya-computer-use": {
+      "command": "C:/path/to/laya-deploy/.venv/Scripts/laya-deploy.exe",
+      "args": ["mcp"],
+      "env": {
+        "LAYA_CUA_URL": "http://127.0.0.1:8100/api/alpha/decisions",
+        "LAYA_CUA_MODEL": "english"
+      }
+    }
+  }
+}

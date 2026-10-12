@@ -1,0 +1,14 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "laya-computer-use": {
+      "type": "local",
+      "command": ["C:/path/to/laya-deploy/.venv/Scripts/laya-deploy.exe", "mcp"],
+      "enabled": true,
+      "environment": {
+        "LAYA_CUA_URL": "http://127.0.0.1:8100/api/alpha/decisions",
+        "LAYA_CUA_MODEL": "english"
+      }
+    }
+  }
+}
