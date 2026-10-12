@@ -1,4 +1,4 @@
-"""Command line: serve / doctor / ask / bench / pull / pacman."""
+"""Command line: serve / doctor / ask / bench / pull / pacman / eval."""
 from __future__ import annotations
 
 import argparse
@@ -184,6 +184,10 @@ def build_parser() -> argparse.ArgumentParser:
     from .pacman_cli import add_parser as add_pacman
 
     add_pacman(sub)
+
+    from .eval_cli import add_parser as add_eval
+
+    add_eval(sub)
 
     sp = sub.add_parser("doctor", help="check torch/CUDA, settings, and run one prediction")
     sp.set_defaults(func=cmd_doctor)

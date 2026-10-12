@@ -31,7 +31,7 @@ HEURISTIC_TEMPERATURE = 2.0
 class MoveDecision:
     move: str
     probabilities: dict[str, float]
-    source: str               # "laya" | "heuristic" | "forced" | "fallback"
+    source: str               # "laya" | "cache" | "heuristic" | "forced" | "fallback"
     latency_ms: float = 0.0
     cost: float | None = None
     error: str = ""
@@ -159,6 +159,7 @@ class GameSummary:
     cost: float = 0.0
     latencies: list = field(default_factory=list)
     fallbacks: int = 0
+    cache_hits: int = 0       # decisions answered entirely from laya decision mode's cache
 
     @property
     def avg_latency_ms(self) -> float:
@@ -180,6 +181,8 @@ async def play(game: PacmanGame, policy: Policy, max_steps: int = 600,
             summary.latencies.append(decision.latency_ms)
         elif decision.source == "fallback":
             summary.fallbacks += 1
+        elif decision.source == "cache":
+            summary.cache_hits += 1
         game.step(decision.move)
         summary.steps += 1
         if on_step is not None:

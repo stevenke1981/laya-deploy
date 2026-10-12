@@ -12,7 +12,9 @@ from .config import AUTO, CHECKPOINTS, Settings
 
 def add_parser(sub: Any) -> None:
     sp = sub.add_parser("pacman", help="Pac-Man demo: laya picks every move")
-    sp.add_argument("--model", default="multilingual", choices=CHECKPOINTS + (AUTO,))
+    sp.add_argument("--model", default="english", choices=CHECKPOINTS + (AUTO,))
+    sp.add_argument("--style", default="native", choices=("native", "prompt"),
+                    help="native = laya decision mode (short phrases, cached); prompt = one Decision-1-style question")
     sp.add_argument("--url", default=DEFAULT_URL, help="laya-deploy server to ask (default: local)")
     sp.add_argument("--direct", action="store_true",
                     help="load laya in this process instead of calling a server")
@@ -29,6 +31,8 @@ def add_parser(sub: Any) -> None:
 
 def _make_policy(args: argparse.Namespace):
     from .games.pacman_agent import HeuristicPolicy, LayaPolicy
+    from .games.pacman_native import NativeLayaPolicy
+    from .mode import Judge
 
     if args.fake:
         return HeuristicPolicy(), None
@@ -40,6 +44,8 @@ def _make_policy(args: argparse.Namespace):
         asker = EngineAsker(engine, args.model)
     else:
         asker = HttpAsker(args.url, args.model, Settings.from_env().api_key)
+    if args.style == "native":
+        return NativeLayaPolicy(Judge(asker), args.model), asker
     return LayaPolicy(asker, args.model), asker
 
 
@@ -53,7 +59,7 @@ def _print_step(i: int, d: Any, game: Any) -> None:
 def _describe(summary: Any) -> str:
     result = "WIN" if summary.won else ("GAME OVER" if summary.lives <= 0 else "STEP LIMIT")
     return (f"{result:10s} score={summary.score:5d} steps={summary.steps:4d} lives={summary.lives} "
-            f"calls={summary.model_calls:4d} fallbacks={summary.fallbacks} "
+            f"calls={summary.model_calls:4d} cached={summary.cache_hits:4d} fallbacks={summary.fallbacks} "
             f"avg={summary.avg_latency_ms:5.1f} ms")
 
 
