@@ -1,6 +1,6 @@
 ---
 name: laya-decisions
-description: Make fast, structured decisions (classify, route, triage, yes/no, score on a scale) with the local laya model served by laya-deploy at http://127.0.0.1:8100. Use when the user wants a cheap local "System 1" judgment with calibrated probabilities instead of free text, or asks to run/test laya, laya-deploy, or its Pac-Man demo.
+description: Make fast, structured decisions (classify, route, triage, yes/no, match a description to candidates) with the local laya model in laya decision mode, served by laya-deploy at http://127.0.0.1:8100. Use when the user wants a cheap local "System 1" judgment with calibrated probabilities instead of free text, or asks to run/test laya, laya-deploy, or its Pac-Man demo.
 ---
 
 # Local decisions with laya (laya-deploy)
@@ -37,33 +37,54 @@ Read `answers.<key>`: `choice` + `probabilities` + `confidence`; `noul` (P(yes))
 
 | model | use for |
 |---|---|
-| `english` | English text. Best for option-matching in tests so far. |
+| `english` | Default. Best in every test so far. |
 | `multilingual` | Non-English text (100+ languages), long input (`LAYA_DEPLOY_MAX_LEN` up to 8192). Strongly biased toward a catch-all option such as `none`/`other`. |
 | `typed-decisions` | Fine-tuned on four typed workflows; near chance elsewhere. |
 | `auto` | Let laya route by detected language. |
 
-## 4. Write questions laya can answer
+## 4. Ask in laya decision mode
 
-- Put the facts in `state`, the decision in `instructions`, and make each option's description
-  say **what is different** about it (see the Pac-Man prompt: "eats a pellet, nearest dangerous ghost 2 steps away").
-- Avoid a catch-all option (`none`, `other`) unless you need it; if you do, gate on its probability yourself.
-- Prefer a two-option `choice` over `noul`: `noul` can follow the label wording instead of the state.
-- `score` is the weakest type. Use it for coarse levels only.
-- Many options (> ~20) squeeze the token budget: split into a hierarchy.
+laya reads the `state` and matches it against the option descriptions. It mostly ignores facts
+written into `instructions`. Shape every question like this (measured: grounding 29/33 vs 15/33
+with Decision-1-style prompts, risk 21/24 vs 17/24, english checkpoint):
+
+1. `state` = only the subject being judged: `{"step_intent": "the Save button"}`, `{"action": "click Button \"Send\""}`, a short phrase. No window dumps, no task background, no boards.
+2. Candidates go in the options; each description says what sets it apart.
+3. No catch-all option (`none`, `other`). Abstain in code: top probability below a threshold (0.5 is a fair start).
+4. Yes/no = a two-option `choice` with contrasting descriptions (e.g. destructive: "deletes, sends, pays, resets…" vs harmless: "opens, views, saves, cancels…"). Do not use `noul`.
+5. One subject per call. Several questions in one call share one `state`; per-item facts in `instructions` do not work.
+6. Your code owns ordering, tie-breaks and thresholds. Turn numbers into a few coarse phrases ("dangerous, ghost very close") so judgments repeat and can be cached.
+
+From Python, use the library instead of hand-writing requests:
+
+```python
+from laya_deploy.client import HttpAsker
+from laya_deploy.mode import Judge, ground, risk
+judge = Judge(HttpAsker(model="english"))      # caches identical calls
+v = await ground(judge, "the Save button", {"e3": 'Button "Save"', "e4": 'Button "Cancel"'}, min_p=0.5)
+p = await risk(judge, 'click Button "Delete all" in Notepad')        # P(destructive)
+v = await judge.classify("I was charged twice", {"billing": "invoices, refunds", "tech": "bugs, outages"})
+```
+
+`uv run laya-deploy eval` re-measures decision mode against Decision-1-style prompts on the shipped cases.
+
+Other limits: `score` is the weakest type; more than ~20 options squeeze the token budget (split into a hierarchy).
 
 ## 5. Trust, but gate
 
 - Probabilities are overconfident by default. Act only above a threshold you measured on real
   examples; below it, escalate to a stronger model or ask the user.
-- Do **not** use laya as the safety/risk gate for real desktop actions (decision-cua): zero-shot it does not
-  separate "Save" from "Delete all" (0.61 vs 0.66). Keep Microsoft-Decision-1 for that.
+- Do **not** use laya as the safety/risk gate for real desktop actions (decision-cua): even in decision mode
+  it missed 3 of 24 risky actions. Keep Microsoft-Decision-1 for that.
 - Errors come back as `{"error": {"message", "code"}}` with HTTP 400/401/413/500; report them, do not retry blindly.
 
 ## Pac-Man demo (sanity check that laya is wired up)
 
 ```powershell
-uv run laya-deploy pacman --model english                    # window: arrows show laya's probabilities
+uv run laya-deploy pacman                                    # window, english, decision mode
+uv run laya-deploy pacman --style prompt                     # old Decision-1-style prompt, for comparison
 uv run laya-deploy pacman --headless --games 5 --quiet       # laya vs heuristic over 5 seeds
 uv run laya-deploy pacman --fake                             # heuristic only, no model
 ```
-Keys in the window: space = pause, r = restart, q/Esc = quit. A `fallback` tag means the call failed and the heuristic moved.
+Measured over seeds 0–4: decision mode (english) 2/5 wins, mean score 1912; Decision-1-style prompt 0/5, 118; heuristic 5/5, 3100.
+Keys: space = pause, r = restart, q/Esc = quit. HUD source tags: `laya` (new call), `cache`, `forced`, `fallback` (call failed, heuristic moved).

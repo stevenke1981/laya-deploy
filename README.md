@@ -30,7 +30,8 @@ Laya 是非自回歸的「System 1」決策模型：給它一段狀態（文字�
 | 首次載入 | 約 7–11 秒（已下載時）；首次下載 english ≈ 808 MB、multilingual ≈ 647 MB |
 | VRAM | english 1.57 GiB、multilingual 1.22 GiB |
 | decision-cua 的 `DecisionClient` 直連 | 可用：回應格式通過其解析器，`cost` 為 0 |
-| **當 decision-cua 的 Decision-1 替身** | **目前不建議**，見下方「限制」 |
+| laya 決策模式 vs Decision-1 式問法（english） | grounding **29/33 vs 15/33**、風險 **21/24 vs 17/24**；Pac-Man 2/5 勝 vs 0/5 |
+| **當 decision-cua 的 Decision-1 替身** | **目前不建議**，見「限制」 |
 
 ## 安裝（Windows）
 
@@ -57,6 +58,7 @@ uv run laya-deploy ask                      # 本機直接推論一個範例問�
 uv run laya-deploy ask --url http://127.0.0.1:8100/api/alpha/decisions --state state.json --questions q.json
 uv run laya-deploy bench --models english multilingual -n 30
 uv run laya-deploy pull --models english multilingual typed-decisions   # 預先下載
+uv run laya-deploy eval                     # 決策模式 vs Decision-1 式問法的準確度（需伺服器）
 ```
 
 ### HTTP API
@@ -91,56 +93,88 @@ uv run dcua ground "the Save button"
 
 decision-cua 仍要求 `OPENROUTER_API_KEY` 非空；它會當作 Bearer 送來，若未設 `LAYA_DEPLOY_API_KEY` 伺服器會忽略它。
 
+## laya 決策模式（本專案的做法）
+
+直接套用 Decision-1 的問法給 laya，效果很差。逐項實驗後（`laya-deploy eval`、Pac-Man），整理出 laya 讀題的方式，
+並做成 `laya_deploy.mode`：
+
+1. **`state` 只放被判斷的對象**：一句意圖、一個動作、一段短語。不放整個視窗、任務背景或棋盤。
+2. **候選放在選項裡**，每個選項的描述寫出「它和別人哪裡不同」。
+3. **不加「都不符合」（`none` / `other`）選項**：改由程式設門檻，低於門檻就棄權。
+4. **是／否判斷用兩個選項的 `choice`**，兩邊描述要對比（如 destructive：刪除、送出、付款… vs harmless：開啟、瀏覽、儲存…），不用 `noul`。
+5. **一次呼叫只問一個對象**：同一次呼叫的多題共用一份 `state`，把各題事實塞進 `instructions` 幾乎無效。
+6. **排序、平手、門檻由程式負責**；相同的短語只問一次（`Judge` 內建 LRU 快取）。
+
+```python
+from laya_deploy.client import HttpAsker
+from laya_deploy.mode import Judge, ground, risk
+
+judge = Judge(HttpAsker(model="english"))
+v = await ground(judge, "the Save button in the dialog", {"e3": 'Button "Save"', "e4": 'Button "Cancel"'})
+v.label, v.p                       # "e3", 0.948（實測）；低於 min_p（預設 0.5）時 label 為 None
+await risk(judge, 'click Button "Delete all" in Notepad')   # P(destructive)，實測 0.983
+await judge.classify("I was charged twice", {"billing": "invoices, refunds", "tech": "bugs, outages"})
+```
+
+### 評測：決策模式 vs Decision-1 式問法（`laya-deploy eval`）
+
+33 個 grounding 案例（Notepad、另存新檔、Gmail 風格、中文對話框、設定頁；其中 6 個目標不存在，正確答案是棄權）、
+24 個動作風險案例。案例是手寫的小集合，數字只當煙霧測試看。2026-10-12 實測：
+
+| checkpoint | 問法 | grounding 正確 | 找到存在的目標 | 選錯元件 | 風險正確 | 漏掉高風險 | 誤報 |
+|---|---|---|---|---|---|---|---|
+| english | **決策模式** | **29/33** | **24/27** | 3 | **21/24** | 3 | 0 |
+| english | Decision-1 式 | 15/33 | 9/27 | 0 | 17/24 | 5 | 2 |
+| multilingual | **決策模式** | **23/33** | **20/27** | 4 | **18/24** | 5 | 1 |
+| multilingual | Decision-1 式 | 7/33 | 1/27 | 0 | 14/24 | 10 | 0 |
+
+Decision-1 式問法「選錯 0」只是因為它幾乎都回答 `none`。
+
 ## 限制（據實）
 
-在 decision-cua 的假桌面（`DCUA_BACKEND=fake`，5 個元件）上，用 `dcua ground` 對同一組目標比較：
-
-| 決策後端 | 找對元件 | 風險判斷「Save」vs「Delete all」 |
-|---|---|---|
-| Microsoft-Decision-1（OpenRouter） | 5/5（英文、中文描述皆對） | 0.05 vs 0.95，區分清楚 |
-| laya english | 1 ok + 1 low_confidence / 6 | 0.61 vs 0.66，幾乎無區分 |
-| laya multilingual | 0 / 6 | 0.65 vs 0.66 |
-
-原因：decision-cua 的 grounding 問題附一個 `none`（都不符合）選項；multilingual checkpoint 會強烈偏向它
-（拿掉 `none` 時 3/3 正確），english 在短狀態下帶 `none` 也 3/3 正確，但 decision-cua 的完整狀態與指令較長，零樣本下就不穩。
-Laya 官方也說明基礎 checkpoint 的零樣本準確度有限、機率預設過度自信、`noul` 可能跟著選項標籤走。
-
-所以：
-
-- **適合**：分類、路由、審核、工單分流等自訂問題；或做為 decision-cua 的離線實驗後端。
-- **不適合**：直接取代 Decision-1 執行真實桌面操作（風險閘門會失效）。
-- **改進方向**：用 `laya.train`（套件內建）以 decision-cua 的 `runs/*.jsonl` 記錄微調，
-  或依每種問題型別做溫度校準（`laya.calibrate`）。
+- **還不能取代 Decision-1 當真實桌面的風險閘門**。決策模式下 english 仍漏掉 3/24 個高風險動作，
+  Decision-1 在 decision-cua 假桌面上把「Save」與「Delete all」分得很清楚（0.05 vs 0.95）。
+- decision-cua 目前送的是 Decision-1 式問題。直接把它指向本服務時，結果就是上表「Decision-1 式」那幾列
+  （假桌面實測：english 1/6、multilingual 0/6）。要拿到決策模式的效果，需要讓 decision-cua 改用 `laya_deploy.mode` 的問法。
+- multilingual 偏好 catch-all 選項，中文也不比 english 好；`score` 題最弱；機率預設過度自信，門檻要用自己的資料量。
+- **改進方向**：用 `laya.train` 以 decision-cua 的 `runs/*.jsonl` 微調，或依題型做溫度校準（`laya.calibrate`）。
 
 ## 示範：laya 玩 Pac-Man
 
-移植自 decision-cua 的 Pac-Man：每一步問 laya 一個 `choice`，選項只列合法方向，
-描述附上「吃到豆子／最近的豆子幾步／最近的危險鬼幾步／可吃的鬼幾步」，畫面上箭頭長短就是機率。
+移植自 decision-cua 的 Pac-Man，有兩種問法：
+
+- `--style native`（預設，決策模式）：每個方向化成兩句短語，危險短語（deadly／dangerous／risky／safe）與食物短語。
+  laya 逐句判斷安全與否，再從「吃得到東西」的角度比對食物短語；程式保留最安全的方向，再挑食物最好的，平手時維持原方向。
+  短語重複率高，一局約 13 次 laya 呼叫，其餘 250 步左右都走快取。
+- `--style prompt`：每一步一個 Decision-1 式 `choice`（整張棋盤 + 每個方向的長描述）。
 
 ```powershell
 uv run laya-deploy serve                                   # 另開一個終端機
-uv run laya-deploy pacman --model english                  # 視窗版
+uv run laya-deploy pacman                                  # 視窗版（english、決策模式）
+uv run laya-deploy pacman --style prompt                   # 舊問法，對照用
 uv run laya-deploy pacman --headless --games 5 --quiet     # 5 個 seed，並與啟發式策略比較
 uv run laya-deploy pacman --direct                         # 不經伺服器，本行程直接載入 laya
 uv run laya-deploy pacman --fake                           # 只用啟發式，不需模型
 ```
 
-按鍵：空白鍵暫停、`r` 重來、`q` / `Esc` 離開。呼叫失敗時該步改用啟發式並標 `fallback`。
+按鍵：空白鍵暫停、`r` 重來、`q` / `Esc` 離開。HUD 的來源標記：`laya`（這步有新呼叫）、`cache`、`forced`（只有一條路）、
+`fallback`（呼叫失敗，改用啟發式）。決策模式下箭頭顯示各方向的安全度占比。
 
 實測（2026-10-12，seed 0–4，每局上限 600 步）：
 
-| 策略 | 勝場 | 平均分數 | 平均步數 | 每步延遲 |
-|---|---|---|---|---|
-| laya english | 0/5 | 118 | 64.6 | 約 42 ms |
-| laya multilingual | 0/5 | 180 | 110.0 | 約 37 ms |
-| 啟發式（基準） | 5/5 | 3100 | 297.8 | 0 |
+| 策略 | 勝場 | 平均分數 | 平均步數 |
+|---|---|---|---|
+| laya english，決策模式 | **2/5** | **1912** | 305.2 |
+| laya multilingual，決策模式 | 0/5 | 1680 | 378.2 |
+| laya english，Decision-1 式 | 0/5 | 118 | 64.6 |
+| laya multilingual，Decision-1 式 | 0/5 | 180 | 110.0 |
+| 啟發式（基準，不用模型） | 5/5 | 3100 | 297.8 |
 
-laya 零樣本很快送命：它沒有可靠地依照「危險鬼幾步」避開。這個示範的用途是驗證接線、延遲與機率顯示，
-以及當作微調前後的對照組，不代表 laya 能玩好遊戲。
+Pac-Man 的事實本來就由程式算好，laya 在這裡的角色是把短語判讀成安全度與偏好；分數提升來自問法，不是 laya 更懂遊戲。
 
 ## Agent skill
 
-`skills/laya-decisions/SKILL.md` 教 agent 如何確認伺服器、發問、選 checkpoint、寫好問題與設門檻。
+`skills/laya-decisions/SKILL.md` 教 agent 如何確認伺服器、用決策模式發問、選 checkpoint、設門檻。
 複製到 `~/.claude/skills/`（Claude Code）或 `~/.config/opencode/skills/`（OpenCode）即可使用。
 
 ## 安全
@@ -157,9 +191,12 @@ src/laya_deploy/
   engine.py     LayaEngine（laya.Router，延遲載入 torch）與 FakeEngine
   server.py     FastAPI：/api/alpha/decisions、/v1/decisions、/health，請求驗證
   client.py     HttpAsker（打伺服器）/ EngineAsker（本行程直接推論）
+  mode.py       laya 決策模式：Judge（classify / match / filter + 快取）、ground、risk
+  eval_cases.py grounding 與風險的標註案例
+  eval_cli.py   eval 子命令：決策模式 vs Decision-1 式問法
   cli.py        serve / ask / bench / pull / doctor
-  pacman_cli.py pacman 子命令
-  games/        Pac-Man 規則、laya 與啟發式策略、Tk 視窗（移植自 decision-cua）
+  pacman_cli.py pacman 子命令（--style native|prompt）
+  games/        Pac-Man 規則、決策模式與 Decision-1 式策略、啟發式、Tk 視窗（移植自 decision-cua）
 skills/laya-decisions/SKILL.md
 scripts/start-server.ps1
 tests/          以 FakeEngine 測試，不需下載模型或 GPU
