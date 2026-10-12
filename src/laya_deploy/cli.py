@@ -1,4 +1,4 @@
-"""Command line: serve / doctor / ask / bench / pull."""
+"""Command line: serve / doctor / ask / bench / pull / pacman."""
 from __future__ import annotations
 
 import argparse
@@ -180,6 +180,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("pull", help="download checkpoints into the Hugging Face cache")
     sp.add_argument("--models", nargs="+", default=["multilingual"], choices=CHECKPOINTS)
     sp.set_defaults(func=cmd_pull)
+
+    from .pacman_cli import add_parser as add_pacman
+
+    add_pacman(sub)
 
     sp = sub.add_parser("doctor", help="check torch/CUDA, settings, and run one prediction")
     sp.set_defaults(func=cmd_doctor)
