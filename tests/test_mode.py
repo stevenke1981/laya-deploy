@@ -152,3 +152,13 @@ def test_cli_has_style_and_eval():
     assert p.parse_args(["pacman"]).style == "native"
     assert p.parse_args(["pacman", "--style", "prompt"]).style == "prompt"
     assert p.parse_args(["eval", "--models", "english"]).models == ["english"]
+
+
+@pytest.mark.parametrize("payload", [{}, {"answers": {}}, {"answers": {"q": {"probabilities": None}}},
+                                     {"answers": {"q": {"probabilities": {"a": "x"}}}}, ["not", "a", "dict"]])
+def test_malformed_answers_raise_ask_error(payload):
+    async def odd(state, questions):
+        return payload
+
+    with pytest.raises(AskError):
+        asyncio.run(Judge(odd).classify("x", {"a": "A", "b": "B"}))

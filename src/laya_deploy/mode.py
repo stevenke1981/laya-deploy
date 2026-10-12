@@ -23,7 +23,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from .client import Asker
+from .client import Asker, AskError
 
 DEFAULT_CACHE = 4096
 
@@ -58,9 +58,12 @@ class Judge:
             self._cache.move_to_end(key)
             return self._cache[key]
         payload = await self.ask(state, {"q": dict(question)})
-        probs = {str(k): float(v) for k, v in payload["answers"]["q"]["probabilities"].items()}
+        try:
+            probs = {str(k): float(v) for k, v in payload["answers"]["q"]["probabilities"].items()}
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
+            raise AskError(f"malformed answer from laya: {type(exc).__name__}: {exc}") from exc
         self.calls += 1
-        self.latency_ms += float(payload.get("latency_ms", 0.0))
+        self.latency_ms += float(payload.get("latency_ms") or 0.0)
         self._cache[key] = probs
         if len(self._cache) > self.cache_size:
             self._cache.popitem(last=False)
