@@ -156,7 +156,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="laya-deploy", description="Local laya decision server")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    sp = sub.add_parser("serve", help="run the OpenRouter-Decisions-compatible HTTP server")
+    sp = sub.add_parser("serve", help="run the HTTP decisions server")
     sp.add_argument("--host")
     sp.add_argument("--port", type=int)
     sp.add_argument("--fake", action="store_true", help="no model: deterministic answers (wiring tests)")

@@ -14,7 +14,7 @@ def add_parser(sub: Any) -> None:
     sp = sub.add_parser("pacman", help="Pac-Man demo: laya picks every move")
     sp.add_argument("--model", default="english", choices=CHECKPOINTS + (AUTO,))
     sp.add_argument("--style", default="native", choices=("native", "prompt"),
-                    help="native = laya decision mode (short phrases, cached); prompt = one Decision-1-style question")
+                    help="native = laya decision mode (short phrases, cached); prompt = one long-prompt question per move")
     sp.add_argument("--url", default=DEFAULT_URL, help="laya-deploy server to ask (default: local)")
     sp.add_argument("--direct", action="store_true",
                     help="load laya in this process instead of calling a server")

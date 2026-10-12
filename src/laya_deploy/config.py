@@ -98,8 +98,7 @@ class Settings:
 def resolve_checkpoint(requested: str | None, default: str) -> str:
     """Map a request's `model` field to a laya checkpoint name (or "auto").
 
-    decision-cua sends its configured model id (e.g. "microsoft/microsoft-decision-1"),
-    so anything that does not name a laya checkpoint falls back to `default`.
+    Anything that does not name a laya checkpoint (or no model at all) falls back to `default`.
     Accepted: "english", "laya/multilingual", "convaiinnovations/laya:typed-decisions", "auto", ...
     """
     if not requested:

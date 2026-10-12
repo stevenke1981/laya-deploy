@@ -1,11 +1,8 @@
-"""FastAPI app: an OpenRouter-Decisions-compatible front for a local laya.
+"""FastAPI app: an HTTP decisions API in front of a local laya.
 
-    POST /api/alpha/decisions   same wire format as https://openrouter.ai/api/alpha/decisions
+    POST /api/alpha/decisions   {"model", "state", "questions"} -> {"answers", "usage", ...}
     POST /v1/decisions          alias
     GET  /health                liveness + device + loaded checkpoints
-
-Point decision-cua at it with
-    DCUA_DECISION_URL=http://127.0.0.1:8100/api/alpha/decisions
 """
 from __future__ import annotations
 
@@ -70,7 +67,7 @@ def _validate_question(q: Any) -> str | None:
 
 
 def to_decisions_response(result: Mapping[str, Any], checkpoint: str, label: str, latency_ms: float) -> dict[str, Any]:
-    """Shape a laya result like an OpenRouter Decisions response (cost is always 0 locally)."""
+    """Shape a laya result as a Decisions-format response (cost is always 0 locally)."""
     usage = dict(result.get("usage") or {})
     routing = result.get("routing") or {}
     served = routing.get("model") or checkpoint

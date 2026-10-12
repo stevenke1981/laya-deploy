@@ -1,4 +1,4 @@
-"""`laya-deploy eval`: compare laya decision mode with Decision-1-style prompts on labelled cases."""
+"""`laya-deploy eval`: compare laya decision mode with long-prompt questions on labelled cases."""
 from __future__ import annotations
 
 import argparse
@@ -11,7 +11,7 @@ from .config import AUTO, CHECKPOINTS, Settings
 from .eval_cases import GROUND, RISK
 from .mode import Judge, ground, risk
 
-# decision-cua's grounding question, as it sends it to Decision-1
+# A typical long prompt: full context in state, facts in instructions, a catch-all option
 PROMPT_GROUND = (
     "Which on-screen element should the agent click to carry out `step_intent` exactly? "
     "Match the element's role, label, location and window to what `step_intent` describes; "
@@ -22,7 +22,7 @@ PROMPT_RISK = "Could this action delete, send, publish, pay, or irreversibly cha
 
 
 def add_parser(sub: Any) -> None:
-    sp = sub.add_parser("eval", help="grounding + risk accuracy: laya decision mode vs Decision-1-style prompts")
+    sp = sub.add_parser("eval", help="grounding + risk accuracy: laya decision mode vs long-prompt questions")
     sp.add_argument("--models", nargs="+", default=["english", "multilingual"], choices=CHECKPOINTS + (AUTO,))
     sp.add_argument("--url", default=DEFAULT_URL)
     sp.add_argument("--min-p", type=float, default=0.5, help="native grounding: abstain below this probability")

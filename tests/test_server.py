@@ -20,9 +20,9 @@ def client(**kw) -> tuple[TestClient, FakeEngine]:
     return TestClient(create_app(Settings(**kw), engine)), engine
 
 
-def test_decisions_endpoint_returns_openrouter_shape():
+def test_decisions_endpoint_returns_decisions_shape():
     c, engine = client()
-    r = c.post("/api/alpha/decisions", json={"model": "microsoft/microsoft-decision-1",
+    r = c.post("/api/alpha/decisions", json={"model": "some-other-model",
                                              "state": "hello", "questions": QUESTIONS})
     assert r.status_code == 200
     body = r.json()
@@ -95,7 +95,7 @@ def test_health():
 
 @pytest.mark.parametrize("requested,expected", [
     (None, "multilingual"),
-    ("microsoft/microsoft-decision-1", "multilingual"),
+    ("some-vendor/other-model", "multilingual"),
     ("english", "english"),
     ("laya/typed-decisions", "typed-decisions"),
     ("convaiinnovations/laya", "english"),

@@ -1,7 +1,7 @@
 [project]
 name = "laya-deploy"
 version = "0.1.0"
-description = "Local deployment of convaiinnovations/laya (System-1 decision model) with an OpenRouter-Decisions-compatible endpoint for decision-cua"
+description = "Run convaiinnovations/laya (System-1 decision model) locally on GPU, with an HTTP decisions API and a laya-native decision mode"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

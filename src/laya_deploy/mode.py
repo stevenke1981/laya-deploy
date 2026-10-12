@@ -9,7 +9,7 @@ Measured on this repo's benchmark (see `laya-deploy eval`), laya does well when
 5. each call asks about one subject (questions in one call share one state),
 
 and the calling code owns ordering, tie-breaks and thresholds. Long prompts that pack the
-facts into `instructions`, Decision-1-style catch-all options, and per-item questions sharing
+facts into `instructions`, catch-all options, and per-item questions sharing
 one state all scored far worse.
 
 `Judge` wraps any `Asker` (HTTP server or in-process engine) and caches identical calls:

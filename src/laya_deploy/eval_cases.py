@@ -1,6 +1,6 @@
 """Labelled cases for `laya-deploy eval`: UI grounding and action risk.
 
-Elements are one-line descriptions in the style of decision-cua's `Element.describe()`.
+Elements are one-line descriptions of UI elements (role, label, value).
 Hand-written on 2026-10-12; small, so read the numbers as a smoke test, not a leaderboard.
 """
 NOTEPAD = {

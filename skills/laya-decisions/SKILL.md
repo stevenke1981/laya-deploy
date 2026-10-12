@@ -18,7 +18,7 @@ uv run laya-deploy serve                           # or scripts\start-server.ps1
 
 ## 2. Ask
 
-`POST http://127.0.0.1:8100/api/alpha/decisions` (same wire format as OpenRouter Decisions):
+`POST http://127.0.0.1:8100/api/alpha/decisions` (Decisions format):
 
 ```json
 {"model": "english",
@@ -46,7 +46,7 @@ Read `answers.<key>`: `choice` + `probabilities` + `confidence`; `noul` (P(yes))
 
 laya reads the `state` and matches it against the option descriptions. It mostly ignores facts
 written into `instructions`. Shape every question like this (measured: grounding 29/33 vs 15/33
-with Decision-1-style prompts, risk 21/24 vs 17/24, english checkpoint):
+with long prompts, risk 21/24 vs 17/24, english checkpoint):
 
 1. `state` = only the subject being judged: `{"step_intent": "the Save button"}`, `{"action": "click Button \"Send\""}`, a short phrase. No window dumps, no task background, no boards.
 2. Candidates go in the options; each description says what sets it apart.
@@ -66,7 +66,7 @@ p = await risk(judge, 'click Button "Delete all" in Notepad')        # P(destruc
 v = await judge.classify("I was charged twice", {"billing": "invoices, refunds", "tech": "bugs, outages"})
 ```
 
-`uv run laya-deploy eval` re-measures decision mode against Decision-1-style prompts on the shipped cases.
+`uv run laya-deploy eval` re-measures decision mode against long-prompt questions on the shipped cases.
 
 Other limits: `score` is the weakest type; more than ~20 options squeeze the token budget (split into a hierarchy).
 
@@ -74,17 +74,17 @@ Other limits: `score` is the weakest type; more than ~20 options squeeze the tok
 
 - Probabilities are overconfident by default. Act only above a threshold you measured on real
   examples; below it, escalate to a stronger model or ask the user.
-- Do **not** use laya as the safety/risk gate for real desktop actions (decision-cua): even in decision mode
-  it missed 3 of 24 risky actions. Keep Microsoft-Decision-1 for that.
+- Do **not** make laya the only gate for irreversible actions (delete, send, pay): even in decision mode
+  it missed 3 of 24 risky actions. Add a human confirmation or a stronger check.
 - Errors come back as `{"error": {"message", "code"}}` with HTTP 400/401/413/500; report them, do not retry blindly.
 
 ## Pac-Man demo (sanity check that laya is wired up)
 
 ```powershell
 uv run laya-deploy pacman                                    # window, english, decision mode
-uv run laya-deploy pacman --style prompt                     # old Decision-1-style prompt, for comparison
+uv run laya-deploy pacman --style prompt                     # long-prompt question, for comparison
 uv run laya-deploy pacman --headless --games 5 --quiet       # laya vs heuristic over 5 seeds
 uv run laya-deploy pacman --fake                             # heuristic only, no model
 ```
-Measured over seeds 0–4: decision mode (english) 2/5 wins, mean score 1912; Decision-1-style prompt 0/5, 118; heuristic 5/5, 3100.
+Measured over seeds 0–4: decision mode (english) 2/5 wins, mean score 1912; long prompt 0/5, 118; heuristic 5/5, 3100.
 Keys: space = pause, r = restart, q/Esc = quit. HUD source tags: `laya` (new call), `cache`, `forced`, `fallback` (call failed, heuristic moved).
