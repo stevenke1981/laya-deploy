@@ -112,6 +112,37 @@ Laya 官方也說明基礎 checkpoint 的零樣本準確度有限、機率預設
 - **改進方向**：用 `laya.train`（套件內建）以 decision-cua 的 `runs/*.jsonl` 記錄微調，
   或依每種問題型別做溫度校準（`laya.calibrate`）。
 
+## 示範：laya 玩 Pac-Man
+
+移植自 decision-cua 的 Pac-Man：每一步問 laya 一個 `choice`，選項只列合法方向，
+描述附上「吃到豆子／最近的豆子幾步／最近的危險鬼幾步／可吃的鬼幾步」，畫面上箭頭長短就是機率。
+
+```powershell
+uv run laya-deploy serve                                   # 另開一個終端機
+uv run laya-deploy pacman --model english                  # 視窗版
+uv run laya-deploy pacman --headless --games 5 --quiet     # 5 個 seed，並與啟發式策略比較
+uv run laya-deploy pacman --direct                         # 不經伺服器，本行程直接載入 laya
+uv run laya-deploy pacman --fake                           # 只用啟發式，不需模型
+```
+
+按鍵：空白鍵暫停、`r` 重來、`q` / `Esc` 離開。呼叫失敗時該步改用啟發式並標 `fallback`。
+
+實測（2026-10-12，seed 0–4，每局上限 600 步）：
+
+| 策略 | 勝場 | 平均分數 | 平均步數 | 每步延遲 |
+|---|---|---|---|---|
+| laya english | 0/5 | 118 | 64.6 | 約 42 ms |
+| laya multilingual | 0/5 | 180 | 110.0 | 約 37 ms |
+| 啟發式（基準） | 5/5 | 3100 | 297.8 | 0 |
+
+laya 零樣本很快送命：它沒有可靠地依照「危險鬼幾步」避開。這個示範的用途是驗證接線、延遲與機率顯示，
+以及當作微調前後的對照組，不代表 laya 能玩好遊戲。
+
+## Agent skill
+
+`skills/laya-decisions/SKILL.md` 教 agent 如何確認伺服器、發問、選 checkpoint、寫好問題與設門檻。
+複製到 `~/.claude/skills/`（Claude Code）或 `~/.config/opencode/skills/`（OpenCode）即可使用。
+
 ## 安全
 
 - 預設只綁 `127.0.0.1`。綁其他介面時若沒設 `LAYA_DEPLOY_API_KEY`，`serve` 會拒絕啟動。
@@ -125,7 +156,11 @@ src/laya_deploy/
   config.py     LAYA_DEPLOY_* 設定、.env 讀取、model 名稱 → checkpoint
   engine.py     LayaEngine（laya.Router，延遲載入 torch）與 FakeEngine
   server.py     FastAPI：/api/alpha/decisions、/v1/decisions、/health，請求驗證
+  client.py     HttpAsker（打伺服器）/ EngineAsker（本行程直接推論）
   cli.py        serve / ask / bench / pull / doctor
+  pacman_cli.py pacman 子命令
+  games/        Pac-Man 規則、laya 與啟發式策略、Tk 視窗（移植自 decision-cua）
+skills/laya-decisions/SKILL.md
 scripts/start-server.ps1
 tests/          以 FakeEngine 測試，不需下載模型或 GPU
 ```
