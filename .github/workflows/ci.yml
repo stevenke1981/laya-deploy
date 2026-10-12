@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        python: ["3.10", "3.12", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+      # Only declared dependencies: core + dev. The model stack (torch, laya) is not installed;
+      # tests run against the fake engine.
+      - name: Test
+        run: uv run --extra dev pytest -q
+      - name: CLI import
+        run: uv run python -c "import laya_deploy.cli, laya_deploy.server; laya_deploy.cli.build_parser()"
