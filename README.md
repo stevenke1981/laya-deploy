@@ -235,6 +235,7 @@ Pac-Man 遊戲規則與視窗移植自同作者的 decision-cua（MIT），有�
 - `--style prompt`：每一步一個長提示 `choice`（整張棋盤 + 每個方向的長描述）。
 
 ```powershell
+./scripts/start-pacman.ps1                                 # 一鍵開視窗：本機真實模型，不需先開服務
 uv run laya-deploy serve                                   # 另開一個終端機
 uv run laya-deploy pacman                                  # 視窗版（english、決策模式）
 uv run laya-deploy pacman --style prompt                   # 長提示問法，對照用
@@ -244,7 +245,13 @@ uv run laya-deploy pacman --fake                           # 只用啟發式，�
 ```
 
 按鍵：空白鍵暫停、`r` 重來、`q` / `Esc` 離開。HUD 的來源標記：`laya`（這步有新呼叫）、`cache`、`forced`（只有一條路）、
-`fallback`（呼叫失敗，改用啟發式）。決策模式下箭頭顯示各方向的安全度占比。
+`heuristic`（明確指定 `--fake` 的離線示範）。決策模式下箭頭顯示各方向的安全度占比。
+
+建議用 `scripts/start-pacman.ps1` 開啟內建視窗版；可加 `-Delay 150` 調整速度、`-Seed 1` 選擇起始局。
+首次載入模型需要等待，完成後才開始移動。CLI 的預設 HTTP 模式仍需先啟動 `laya-deploy serve`。
+視窗與無視窗模式都會先驗證模型推論；服務失聯、假模型或無效回應會停止測試。
+視窗會顯示 `MODEL ERROR`，修復連線後按 `r` 重試；無視窗模式回傳非零結束碼。
+暫停時位置與步數固定，重開會取消上一局的待執行動作。需要離線啟發式示範時請明確加 `--fake`。
 
 實測（2026-10-12，seed 0–4，每局上限 600 步）：
 

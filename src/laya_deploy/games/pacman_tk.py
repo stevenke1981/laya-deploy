@@ -6,6 +6,7 @@ Pac-Man's position for `delay_ms`, then move. Keys: space = pause, r = restart, 
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 import tkinter as tk
 from collections.abc import Awaitable, Callable, Coroutine
@@ -31,6 +32,7 @@ FONT = ("Courier New", 13, "bold")
 FONT_SMALL = ("Courier New", 10, "bold")
 MOUTH_ANGLE = {"right": 0, "up": 90, "left": 180, "down": 270}
 ARROW_GLYPH = {"up": "↑", "down": "↓", "left": "←", "right": "→"}
+log = logging.getLogger("laya_deploy.games.pacman")
 
 
 class _AsyncWorker:
@@ -38,29 +40,55 @@ class _AsyncWorker:
 
     def __init__(self) -> None:
         self.loop = asyncio.new_event_loop()
+        self._submitted: tuple[tuple[Coroutine[Any, Any, Any], Future], ...] = ()
         self._thread = threading.Thread(target=self.loop.run_forever, daemon=True)
         self._thread.start()
 
     def submit(self, coro: Coroutine[Any, Any, Any]) -> Future:
-        return asyncio.run_coroutine_threadsafe(coro, self.loop)
+        future = asyncio.run_coroutine_threadsafe(coro, self.loop)
+        self._submitted = (*(entry for entry in self._submitted if not entry[1].done() or entry[1].cancelled()),
+                           (coro, future))
+        return future
 
     def stop(self, closer: Callable[[], Awaitable[None]] | None = None) -> None:
+        if self.loop.is_closed():
+            return
+        try:
+            self.submit(self._shutdown(closer)).result(timeout=5)
+        except Exception:
+            log.exception("Pac-Man worker cleanup failed")
+        finally:
+            self.loop.call_soon_threadsafe(self.loop.stop)
+            self._thread.join(timeout=5)
+            if self._thread.is_alive():
+                log.error("Pac-Man worker did not stop within five seconds")
+            else:
+                self.loop.close()
+                self._submitted = ()
+
+    async def _shutdown(self, closer: Callable[[], Awaitable[None]] | None) -> None:
+        pending = [task for task in asyncio.all_tasks() if task is not asyncio.current_task()]
+        # Future cancellation reaches the task asynchronously; remember it even
+        # on Python 3.10, where Task.cancelling() is unavailable.
+        cancelled = {coro for coro, future in self._submitted if future.cancelled()}
+        for task in pending:
+            if task.get_coro() not in cancelled and not getattr(task, "cancelling", lambda: 0)():
+                task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
         if closer is not None:
-            try:
-                self.submit(closer()).result(timeout=5)
-            except Exception:
-                pass
-        self.loop.call_soon_threadsafe(self.loop.stop)
+            await closer()
 
 
 class PacmanApp:
     def __init__(self, root: tk.Tk, policy: Policy, *, seed: int | None = 0, delay_ms: int = 400,
-                 max_steps: int = 600, closer: Callable[[], Awaitable[None]] | None = None) -> None:
+                 max_steps: int = 600, closer: Callable[[], Awaitable[None]] | None = None,
+                 worker: _AsyncWorker | None = None) -> None:
         self.root, self.policy, self.seed = root, policy, seed
         self.delay_ms, self.max_steps, self.closer = delay_ms, max_steps, closer
-        self.worker = _AsyncWorker()
+        self.worker = worker if worker is not None else _AsyncWorker()
         self.high_score = 0
         self.paused = self.closed = False
+        self._scheduled: str | None = None
         self._new_game()
         w, h = self.game.width * CELL, self.game.height * CELL
         self.canvas = tk.Canvas(root, width=w, height=h + HUD_TOP + HUD_BOTTOM, bg=BG, highlightthickness=0)
@@ -73,7 +101,7 @@ class PacmanApp:
             root.bind(key, lambda _e, fn=fn: fn())
         self._draw_maze()
         self.redraw()
-        root.after(300, self._tick)
+        self._schedule(300, self._tick)
 
     # ------------------------------------------------------------------ control
     def _new_game(self) -> None:
@@ -82,30 +110,62 @@ class PacmanApp:
         self.cost = self.latency_total = 0.0
         self.decision: MoveDecision | None = None
         self.future: Future | None = None
+        self._discard_pending = False
         self.status = ""
+        self.error = ""
+
+    def _cancel_scheduled(self) -> None:
+        token, self._scheduled = self._scheduled, None
+        if token is not None:
+            self.root.after_cancel(token)
+
+    def _schedule(self, delay_ms: int, callback: Callable[[], None]) -> None:
+        self._cancel_scheduled()
+
+        def invoke() -> None:
+            if self._scheduled != token:
+                return
+            self._scheduled = None
+            callback()
+
+        token = self.root.after(delay_ms, invoke)
+        self._scheduled = token
 
     def toggle_pause(self) -> None:
+        if self.closed or self.error:
+            return
         self.paused = not self.paused
+        self._cancel_scheduled()
         self.redraw()
         if not self.paused:
-            self.root.after(POLL_MS, self._tick)
+            self._schedule(POLL_MS, self._tick)
 
     def restart(self) -> None:
-        if self.future is not None and not self.future.done():
-            return  # let the pending decision finish first
-        was_over = self.game.over or self.steps >= self.max_steps
+        if self.closed:
+            return
+        self._cancel_scheduled()
+        pending = self.future
+        if self.error:
+            self.paused = False
         if self.seed is not None:
             self.seed += 1  # a different ghost pattern each round
         self._new_game()
+        # Cancelling an await cannot stop direct GPU inference. Drain the old
+        # decision before requesting another, while resetting the board now.
+        self.future, self._discard_pending = pending, pending is not None
+        if pending is not None:
+            self.status = "Waiting for previous model decision..."
         self.redraw()
-        if was_over and not self.paused:
-            self.root.after(300, self._tick)
+        if not self.paused:
+            self._schedule(300, self._tick)
 
     def close(self) -> None:
         if self.closed:
             return
         self.closed = True
+        self._cancel_scheduled()
         self.worker.stop(self.closer)
+        self.future = None
         self.root.destroy()
 
     def _tick(self) -> None:
@@ -115,17 +175,27 @@ class PacmanApp:
         if g.over or self.steps >= self.max_steps:
             self.redraw()
             return
+        if self.decision is not None:
+            self._schedule_move(self.decision)
+            return
         if self.future is None:
             self.future = self.worker.submit(self.policy.decide(g))
-            self.root.after(POLL_MS, self._tick)
+            self.status = "Checking Laya..." if self.policy.name.startswith("LAYA") else "Choosing move..."
+            self.redraw()
+            self._schedule(POLL_MS, self._tick)
             return
         if not self.future.done():
-            self.root.after(POLL_MS, self._tick)
+            self._schedule(POLL_MS, self._tick)
+            return
+        if self._discard_pending:
+            self._drain_previous_decision()
             return
         try:
             d = self.future.result()
-        except Exception as exc:  # show the error instead of dying silently
-            self.future, self.status = None, f"policy error: {exc}"[:70]
+        except Exception as exc:
+            log.exception("Pac-Man policy failed; press R to retry")
+            self.future, self.paused = None, True
+            self.error = f"{type(exc).__name__}: {exc}"
             self.redraw()
             return
         self.future = None
@@ -136,18 +206,29 @@ class PacmanApp:
             self.latency_total += d.latency_ms
         self.status = f"fallback: {d.error}"[:70] if d.source == "fallback" else ""
         self.redraw()
+        self._schedule_move(d)
+
+    def _drain_previous_decision(self) -> None:
+        try:
+            self.future.result()
+        except Exception:
+            log.warning("Previous Pac-Man game decision failed after restart", exc_info=True)
+        self.future, self._discard_pending, self.status = None, False, ""
+        self._schedule(POLL_MS, self._tick)
+
+    def _schedule_move(self, d: MoveDecision) -> None:
         hold = self.delay_ms if d.source != "forced" else self.delay_ms // 3
-        self.root.after(max(1, hold), lambda: self._advance(d))
+        self._schedule(max(1, hold), lambda: self._advance(d))
 
     def _advance(self, d: MoveDecision) -> None:
-        if self.closed:
+        if self.closed or self.paused or self.decision is not d:
             return
         self.game.step(d.move)
         self.steps += 1
         self.high_score = max(self.high_score, self.game.score)
         self.decision = None
         self.redraw()
-        self.root.after(POLL_MS, self._tick)
+        self._schedule(POLL_MS, self._tick)
 
     # ------------------------------------------------------------------ drawing
     def _cell_box(self, p: Any, inset: float = 0.0) -> tuple:
@@ -256,6 +337,9 @@ class PacmanApp:
                           fill=ARROW_TOP, font=FONT_SMALL, tags="dyn")
         elif self.status:
             c.create_text(w / 2, base + 46, text=self.status, fill=LABEL_RED, font=FONT_SMALL, tags="dyn")
+        if self.error:
+            self._draw_error(w)
+            return
         banner = None
         if g.over:
             banner = "YOU WIN!" if g.won else "GAME OVER"
@@ -270,14 +354,35 @@ class PacmanApp:
             hint = "space: resume" if banner == "PAUSED" else "r: play again"
             c.create_text(w / 2, cy + 16, text=hint, fill=TEXT, font=FONT_SMALL, tags="dyn")
 
+    def _draw_error(self, width: int) -> None:
+        c = self.canvas
+        cy = HUD_TOP + self.game.height * CELL / 2
+        c.create_rectangle(12, cy - 100, width - 12, cy + 100,
+                           fill=BG, outline=LABEL_RED, width=2, tags="dyn")
+        c.create_text(width / 2, cy - 72, text="MODEL ERROR", fill=LABEL_RED, font=FONT, tags="dyn")
+        c.create_text(width / 2, cy - 8, text=self.error[:220], width=width - 60,
+                      fill=TEXT, font=FONT_SMALL, tags="dyn")
+        c.create_text(width / 2, cy + 72, text="R: retry  |  Q / Esc: quit",
+                      fill=PAC, font=FONT_SMALL, tags="dyn")
+
 
 def run_app(policy: Policy, *, seed: int | None = 0, delay_ms: int = 400, max_steps: int = 600,
             closer: Callable[[], Awaitable[None]] | None = None) -> None:
-    root = tk.Tk()
-    root.geometry(WINDOW_POS)
-    PacmanApp(root, policy, seed=seed, delay_ms=delay_ms, max_steps=max_steps, closer=closer)
-    # Started from a terminal, the window can open behind other apps: raise it once.
-    root.lift()
-    root.attributes("-topmost", True)
-    root.after(500, lambda: root.attributes("-topmost", False))
-    root.mainloop()
+    worker, root, app = _AsyncWorker(), None, None
+    try:
+        root = tk.Tk()
+        root.geometry(WINDOW_POS)
+        app = PacmanApp(root, policy, seed=seed, delay_ms=delay_ms, max_steps=max_steps,
+                        closer=closer, worker=worker)
+        # Started from a terminal, the window can open behind other apps: raise it once.
+        root.lift()
+        root.attributes("-topmost", True)
+        root.after(500, lambda: root.attributes("-topmost", False))
+        root.mainloop()
+    finally:
+        if app is not None:
+            app.close()
+        else:
+            worker.stop(closer)
+            if root is not None:
+                root.destroy()
